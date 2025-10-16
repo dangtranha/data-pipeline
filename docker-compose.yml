@@ -1,29 +1,22 @@
 services:
-  zookeeper:
-    image: confluentinc/cp-zookeeper:latest
-    container_name: zookeeper
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
-    ports:
-      - "2181:2181"
-
   kafka:
     image: confluentinc/cp-kafka:latest
     container_name: kafka
     ports:
       - "9092:9092"
+      - "9093:9093"
     environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-    depends_on:
-      - zookeeper
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_NUM_PARTITIONS: 1
 
   postgres:
-    image: postgres:13
+    image: postgres:latest
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -34,51 +27,19 @@ services:
       - ./data/northwind.sql:/docker-entrypoint-initdb.d/northwind.sql
 
   debezium:
-    build: ./debezium
+    image: debezium/connect:3.0.0.Final
     container_name: debezium-connect
-    ports:
-      - "8083:8083"
-    environment:
-      BOOTSTRAP_SERVERS: kafka:9092
-      GROUP_ID: 1
-      CONFIG_STORAGE_TOPIC: connect_configs
-      OFFSET_STORAGE_TOPIC: connect_offsets
-      STATUS_STORAGE_TOPIC: connect_statuses
-    depends_on:
-      - kafka
-      - postgres
 
   spark-master:
     image: apache/spark:3.4.0
-    container_name: spark-master
-    command: >
-      /opt/spark/bin/spark-class
-      org.apache.spark.deploy.master.Master
-      --host spark-master
-    ports:
-      - "7077:7077"
-      - "8080:8080"
-    environment:
-      - SPARK_NO_DAEMONIZE=true
-      - MINIO_ENDPOINT=http://minio:9000
-      - MINIO_ACCESS_KEY=minioadmin
-      - MINIO_SECRET_KEY=minioadmin
-      - MINIO_BUCKET=data-lake
+    container_name: spark-master-final 
 
   spark-worker:
     image: apache/spark:3.4.0
-    container_name: spark-worker
-    depends_on:
-      - spark-master
-    command: >
-      /opt/spark/bin/spark-class
-      org.apache.spark.deploy.worker.Worker
-      spark://spark-master:7077
-    environment:
-      - SPARK_NO_DAEMONIZE=true
+    container_name: spark-worker-final
 
   minio:
-    image: quay.io/minio/minio:RELEASE.2025-02-12T02-11-01Z
+    image: quay.io/minio/minio:latest
     container_name: minio
     command: server /data --console-address ":9001"
     ports:
