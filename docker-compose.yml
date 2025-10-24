@@ -9,12 +9,12 @@ services:
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_NODE_ID: 1
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
       KAFKA_NUM_PARTITIONS: 1
-
   postgres:
     image: postgres:latest
     environment:
@@ -24,7 +24,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - ./data/northwind.sql:/docker-entrypoint-initdb.d/northwind.sql
+      - ./postgres/data/northwind.sql:/docker-entrypoint-initdb.d/northwind.sql
 
   debezium:
     image: debezium/connect:3.0.0.Final
@@ -32,11 +32,11 @@ services:
 
   spark-master:
     image: apache/spark:3.4.0
-    container_name: spark-master-final 
+    container_name: spark-master
 
   spark-worker:
     image: apache/spark:3.4.0
-    container_name: spark-worker-final
+    container_name: spark-worker
 
   minio:
     image: quay.io/minio/minio:latest
