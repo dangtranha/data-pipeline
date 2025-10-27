@@ -1,0 +1,25 @@
+{
+  "name": "s3-sink-minio",
+  "config": {
+    "connector.class": "io.confluent.connect.s3.S3SinkConnector",
+    "tasks.max": "1",
+    "topics": "northwind.public.customers",
+    "s3.bucket.name": "bronze",
+    "s3.region": "us-east-1",
+    "flush.size": "3",
+
+    "storage.class": "io.confluent.connect.s3.storage.S3Storage",
+    "format.class": "io.confluent.connect.s3.format.json.JsonFormat",
+    "schema.compatibility": "NONE",
+
+    "s3.endpoint": "http://minio:9000",
+    "s3.path.style.access": "true", 
+    "store.url": "http://minio:9000", 
+
+    "aws.access.key.id": "minioadmin",
+    "aws.secret.access.key": "minioadmin",
+
+    "behavior.on.null.values": "ignore",
+    "behavior.on.error": "fail"
+  }
+}

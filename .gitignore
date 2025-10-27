@@ -1,0 +1,3 @@
+./minio/bucket/bronze/*
+./minio/bucket/silver/*
+./minio/bucket/gold/*

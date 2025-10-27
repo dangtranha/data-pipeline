@@ -1,22 +1,27 @@
 services:
   kafka:
-    image: confluentinc/cp-kafka:latest
-    container_name: kafka
+    image: confluentinc/cp-kafka:7.3.0
     ports:
       - "9092:9092"
-      - "9093:9093"
     environment:
-      KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_NODE_ID: 1
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
-      KAFKA_NUM_PARTITIONS: 1
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      # AWS_ACCESS_KEY_ID: minioadmin
+      # AWS_SECRET_ACCESS_KEY: minioadmin
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    depends_on:
+      - zookeeper
 
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.3.0
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
   postgres:
-    image: postgres:latest
+    image: postgres:13
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -24,19 +29,34 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - ./data/northwind.sql:/docker-entrypoint-initdb.d/northwind.sql
+      - ./postgres/data/northwind.sql:/docker-entrypoint-initdb.d/northwind.sql
+      - ./postgres/config/connector.sql:/docker-entrypoint-initdb.d/connector.sql
 
-  debezium:
-    image: debezium/connect:3.0.0.Final
-    container_name: debezium-connect
+  connect:
+    image: debezium/connect:2.1
+    ports:
+      - "8083:8083"
+    environment:
+      GROUP_ID: 1
+      CONFIG_STORAGE_TOPIC: my_connect_configs
+      OFFSET_STORAGE_TOPIC: my_connect_offsets
+      STATUS_STORAGE_TOPIC: my_connect_statuses
+      BOOTSTRAP_SERVERS: kafka:29092
+      CONNECT_PLUGIN_PATH: /kafka/connect,/kafka/connect/s3
+    volumes:
+      - ./debezium/plugins:/kafka/connect/s3
+    depends_on:
+      - kafka
+      - postgres
 
+    
   spark-master:
     image: apache/spark:3.4.0
-    container_name: spark-master-final 
+    container_name: spark-master
 
   spark-worker:
     image: apache/spark:3.4.0
-    container_name: spark-worker-final
+    container_name: spark-worker
 
   minio:
     image: quay.io/minio/minio:latest

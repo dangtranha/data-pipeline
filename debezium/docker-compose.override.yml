@@ -1,13 +1,19 @@
 services:
   debezium:
     ports:
-      - "8083:8083"
+      - "8083:8083"         
     environment:
       BOOTSTRAP_SERVERS: kafka:9092
       GROUP_ID: 1
       CONFIG_STORAGE_TOPIC: connect_configs
       OFFSET_STORAGE_TOPIC: connect_offsets
       STATUS_STORAGE_TOPIC: connect_statuses
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      REST_ADVERTISED_HOST_NAME: debezium-connect
+      REST_ADVERTISED_PORT: 8083
+      REST_HOST_NAME: 0.0.0.0
+      PLUGIN_PATH: /kafka/connect,/debezium/connectors
     depends_on:
       - kafka
       - postgres
