@@ -8,3 +8,7 @@ echo "Registering connector..."
 curl -X POST -H "Content-Type: application/json"\
     --data @debezium/config/connector-postgres.json\
     http://localhost:8083/connectors
+
+curl -X POST -H "Content-Type: application/json"\
+   --data @debezium/config/connector-minio.json\
+    http://localhost:8083/connectors
