@@ -31,6 +31,7 @@ services:
     volumes:
       - ./postgres/data/northwind.sql:/docker-entrypoint-initdb.d/northwind.sql
       - ./postgres/config/connector.sql:/docker-entrypoint-initdb.d/connector.sql
+
   connect:
     image: debezium/connect:2.1
     ports:

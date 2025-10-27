@@ -1,4 +1,4 @@
-minio/bucket/bronze/
-minio/bucket/silver/
-minio/bucket/gold/
+minio/bucket/bronze/*
+minio/bucket/silver/*
+minio/bucket/gold/*
 minio/bucket/.minio.sys/
