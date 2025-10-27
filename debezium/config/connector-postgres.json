@@ -14,6 +14,7 @@
     "publication.name": "northwind_pub",
     "topic.prefix": "northwind",
     "table.include.list": "public.orders,public.customers",
-    "tombstones.on.delete": "false"
+    "tombstones.on.delete": "false",
+    "snapshot.mode": "initial"
   }
 }

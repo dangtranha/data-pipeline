@@ -14,8 +14,8 @@
                                       │
                                       ▼
                   ┌───────────────────────────────────────┐
-                  │        Bronze Layer (Raw, Delta)       │
-                  │          stored in MinIO + Delta Lake  │
+                  │        Bronze Layer (Raw, Delta)      │
+                  │      stored in MinIO + Delta Lake     │
                   └───────────────────────────────────────┘
                                  │
              ┌───────────────────┴───────────────────┐
@@ -30,5 +30,14 @@
              │                                       │
              └───────────────────┬───────────────────┘
                                  ▼
-                         BI Layer (Dashboard)
+                    BI Layer (Dashboard)
                  (PowerBI, Superset, Grafana, v.v.)
+
+
+
+
+1. Config deltalake + MinIO  (Việt)   
+2. Streaming (Phát)  
+3. Batch ETL (Phúc hoặc Đăng)
+4. BI (Streaming - Grafana, Batch ETL - PowerBI, supperset ) (Phượng)
+  
