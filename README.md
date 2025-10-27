@@ -35,7 +35,6 @@
 
 
 
-
 1. Config deltalake + MinIO  (Việt)   
 2. Streaming (Phát)  
 3. Batch ETL (Phúc hoặc Đăng)
