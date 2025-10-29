@@ -1,0 +1,11 @@
+# Apache Spark runtime
+pyspark==3.5.6
+
+# Delta Lake connector
+delta-spark==3.2.0
+
+# AWS S3 / MinIO interaction
+boto3>=1.28.0
+
+# For reading/writing Parquet efficiently
+pyarrow>=14.0.0
