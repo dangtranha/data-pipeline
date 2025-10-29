@@ -13,7 +13,7 @@
     "slot.name": "northwind_slot",
     "publication.name": "northwind_pub",
     "topic.prefix": "northwind",
-    "table.include.list": "public.orders,public.customers",
+    "table.include.list": "public.orders,public.customers,public.order_details,public.products,public.suppliers,public.categories",
     "tombstones.on.delete": "false",
     "snapshot.mode": "initial"
   }
