@@ -3,7 +3,7 @@
   "config": {
     "connector.class": "io.confluent.connect.s3.S3SinkConnector",
     "tasks.max": "1",
-    "topics": "northwind.public.customers",
+    "topics": "northwind.public.customers,northwind.public.orders,northwind.public.order_details,northwind.public.products,northwind.public.suppliers,northwind.public.categories",
     "s3.bucket.name": "bronze",
     "s3.region": "us-east-1",
     "flush.size": "3",

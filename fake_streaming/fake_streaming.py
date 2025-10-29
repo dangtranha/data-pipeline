@@ -140,7 +140,9 @@ for _, order in orders.iterrows():
                 clean_value(d.get(find_col(order_details, ["discount", "Discount"]))),
             ))
         conn.commit()
+        
 
+        
         print(f"Streamed order {order_id} with {len(details)} details.")
         time.sleep(random.uniform(2, 4))
 
