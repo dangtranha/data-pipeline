@@ -1,0 +1,14 @@
+services:
+  spark-batch:
+    image: apache/spark:3.4.0
+    container_name: spark-batch
+    user: root
+    command: tail -f /dev/null
+    volumes:
+      - ./app:/opt/spark-apps
+    networks:
+      - data-pipeline-network
+
+networks:
+  data-pipeline-network:
+    external: true
