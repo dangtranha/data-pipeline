@@ -43,6 +43,15 @@ def wait_for_silver_ready(spark, silver_path, max_wait=300):
         time.sleep(10)
 
 
+def _to_date_from_days(col_expr):
+    """
+    Chuyển cột integer (số ngày kể từ 1970-01-01) -> date.
+    Ví dụ dữ liệu Northwind dùng giá trị ~9700 => tương ứng năm 1996.
+    """
+    # date_add returns date, so we can use it directly
+    return F.expr(f"date_add('1970-01-01', cast({col_expr} as int))")
+
+
 def run_gold(spark, silver_conf, gold_conf):
     """Đọc dữ liệu Silver, tổng hợp và ghi ra Gold layer."""
     configure_s3a(spark, gold_conf.get("minio") or silver_conf.get("minio"))
@@ -63,40 +72,46 @@ def run_gold(spark, silver_conf, gold_conf):
     wait_for_silver_ready(spark, silver_orders)
     wait_for_silver_ready(spark, silver_details)
 
+    # đọc streaming từ Silver orders Delta
     orders_stream = spark.readStream.format("delta").load(silver_orders)
 
     def _foreach_batch(micro_batch_df, batch_id):
         try:
             print(f"[INFO] Processing batch {batch_id} ...")
-            # đọc snapshot order_details
+            # đọc snapshot order_details (tĩnh cho batch hiện tại)
             try:
                 details_df = spark.read.format("delta").load(silver_details)
             except Exception as e:
                 print(f"[WARN] Cannot read order_details: {e}")
                 details_df = None
 
-            # dữ liệu orders đã chuẩn hóa cột chữ thường ở Silver
+            # chuẩn hoá orders batch: chọn cột, ép kiểu, convert order_date -> date
+            # micro_batch_df có cột order_id, customer_id, order_date (int), ts_ms (ingest timestamp)
             orders_batch = (
                 micro_batch_df
-                .select("order_id", "customer_id", "order_date", "ts_ms")
-                .withColumnRenamed("ts_ms", "ingest_ts")
+                .select(
+                    F.col("order_id").cast("long").alias("order_id"),
+                    F.col("customer_id").alias("customer_id"),
+                    F.col("order_date").alias("order_date"),
+                    F.col("ingest_ts").alias("ingest_ts")
+                )
                 .dropDuplicates(["order_id"])
             )
 
-            # chuẩn hóa order_details
+            # nếu details_df khả dụng: chuẩn hoá types để join đúng
             if details_df is not None:
                 details_df = (
                     details_df
                     .select(
-                        "order_id",
-                        "product_id",
-                        F.col("unit_price").cast("double"),
-                        F.col("quantity").cast("double"),
-                        F.col("discount").cast("double")
+                        F.col("order_id").cast("long").alias("order_id"),
+                        F.col("product_id").cast("long").alias("product_id"),
+                        F.col("unit_price").cast("double").alias("unit_price"),
+                        F.col("quantity").cast("double").alias("quantity"),
+                        F.col("discount").cast("double").alias("discount")
                     )
                 )
 
-            # ghi vào orders_fact (UPSERT)
+            # ghi vào orders_fact (UPSERT bằng Delta merge)
             try:
                 if DeltaTable.isDeltaTable(spark, gold_orders):
                     dt = DeltaTable.forPath(spark, gold_orders)
@@ -106,26 +121,43 @@ def run_gold(spark, silver_conf, gold_conf):
                      .whenNotMatchedInsertAll()
                      .execute())
                 else:
+                    # lần đầu: ghi toàn bộ snapshot cho orders_fact
                     orders_batch.write.format("delta").mode("overwrite").save(gold_orders)
                 print(f"[INFO] orders_fact updated for batch {batch_id}")
             except Exception as e:
                 print(f"[ERROR] write/merge orders_fact failed: {e}")
 
-            # tính doanh thu theo ngày
+            # tính doanh thu (revenue) theo ngày và ghi vào gold_revenue
             try:
                 if details_df is not None and not orders_batch.rdd.isEmpty():
-                    joined = details_df.join(orders_batch, "order_id", "inner")
+                    # join details (snapshot) với orders_batch (batch mới)
+                    joined = details_df.join(orders_batch.select("order_id", "order_date"), "order_id", "inner")
+
                     rev = joined.withColumn(
                         "revenue",
                         F.col("unit_price") * F.col("quantity") * (1 - F.col("discount"))
                     )
+
+                    # group by order_date (already a date) và sum revenue
                     rev_by_day = (
-                        rev.withColumn("order_date", F.to_date("order_date"))
+                        rev
                         .groupBy("order_date")
                         .agg(F.sum("revenue").alias("total_revenue"))
                     )
-                    rev_by_day.write.format("delta").mode("append").save(gold_revenue)
+
+                    # tính min_date và max_date từ rev_by_day
+                    min_date = rev_by_day.select(F.min("order_date")).collect()[0][0]
+                    max_date = rev_by_day.select(F.max("order_date")).collect()[0][0]
+                    min_date_str = str(min_date)
+                    max_date_str = str(max_date)
+
+                    # ghi append vào gold_revenue (delta)
+                    rev_by_day.write.format("delta").mode("overwrite") \
+                        .option("replaceWhere", f"order_date >= '{min_date_str}' and order_date <= '{max_date_str}'") \
+                        .save(gold_revenue)
                     print(f"[INFO] revenue_by_day updated for batch {batch_id}")
+                else:
+                    print(f"[INFO] Skipping revenue aggregation for batch {batch_id} (no details or no orders).")
             except Exception as e:
                 print(f"[WARN] revenue aggregation failed for batch {batch_id}: {e}")
 
