@@ -2,10 +2,13 @@ import json
 import time
 import threading
 from pyspark.sql import functions as F
-from pyspark.sql.types import MapType, StringType
+from pyspark.sql.types import (
+    MapType, StringType, StructType, StructField, LongType
+)
 
-from utils.schema_parser import parse_debezium_value
-
+# Note: chúng ta không dùng parse_debezium_value từ utils ở đây nữa,
+# vì ta tự implement parser tổng quát ngay trong file này để dễ điều chỉnh
+# và đảm bảo tương thích với dữ liệu Debezium "after" trực tiếp.
 
 def configure_s3a(spark, minio_conf):
     """Cấu hình Hadoop S3A để kết nối tới MinIO bằng thông tin trong silver_conf"""
@@ -39,15 +42,69 @@ def monitor_stream(query, interval=10):
             print("[INFO] Silver stream is waiting for new files in Bronze layer (no new data yet).")
         else:
             num_input = progress.get("numInputRows", 0)
-            print(f"[INFO] New micro-batch processed, rows={num_input}")
+            num_output = progress.get("numOutputRows", 0)
+            print(f"[INFO] New micro-batch processed, rows_in={num_input}, rows_out={num_output}")
             last_progress = progress
         time.sleep(interval)
 
 
+def get_generic_debezium_schema():
+    """
+    Schema tổng quát cho Debezium JSON: before/after là MapType để chấp nhận bất kỳ cặp key-value nào.
+    """
+    return StructType([
+        StructField("before", MapType(StringType(), StringType()), True),
+        StructField("after", MapType(StringType(), StringType()), True),
+        StructField("op", StringType(), True),
+        StructField("ts_ms", LongType(), True)
+    ])
+
+
+def parse_debezium_df(df_with_value):
+    """
+    Parse chung Debezium envelope từ cột 'value' (string) thành các cột:
+      - before (map)
+      - after (map)
+      - op
+      - ts_ms
+    Trả về DataFrame đã tách các cột trên (không flatten `after`).
+    """
+    schema = get_generic_debezium_schema()
+    parsed = df_with_value.withColumn("json_data", F.from_json(F.col("value"), schema))
+    # select expand at top level so columns are 'before','after','op','ts_ms'
+    parsed = parsed.select("json_data.before", "json_data.after", "json_data.op", "json_data.ts_ms")
+    return parsed
+
+
+def coalesce_after_map(col, candidates, alias):
+    """
+    Trả về expression coalesce cho các key có thể xuất hiện trong map 'after'.
+    col: tên cột map (chúng ta dùng 'after').
+    candidates: danh sách tên khóa có thể.
+    alias: tên alias cho cột kết quả.
+    """
+    # F.coalesce expects column expressions, so create them from map access
+    exprs = [F.col(f"after['{k}']") for k in candidates]
+    return F.coalesce(*exprs).alias(alias)
+
+
+def flatten_after_map(df, prefix=None):
+    """
+    Tự động tạo các cột từ map 'after'. Trả về df với các cột mới.
+    Lưu ý: collect keys từng batch (đắt nếu dữ liệu lớn). Sử dụng khi dataset nhỏ hoặc test.
+    """
+    # Lấy tất cả key hiện có (cẩn trọng, bằng cách này ta thu về driver)
+    keys = df.select(F.explode(F.map_keys("after")).alias("k")).distinct().rdd.map(lambda r: r.k).collect()
+    for k in keys:
+        col_name = k if not prefix else f"{prefix}_{k}"
+        df = df.withColumn(col_name, F.col(f"after['{k}']"))
+    return df
+
+
 def run_silver(spark, kafka_conf, silver_conf):
     """
-    Đọc dữ liệu thô từ Bronze layer (được lưu trong MinIO ở định dạng JSON),
-    phân tích (parse) cấu trúc Debezium envelope và ghi dữ liệu đã làm sạch ra Silver layer (định dạng Delta).
+    Đọc dữ liệu thô từ Bronze layer (MinIO JSON),
+    phân tích (parse) cấu trúc Debezium envelope và ghi dữ liệu đã làm sạch ra Silver layer (Delta).
     """
 
     # cấu hình kết nối s3a -> MinIO
@@ -69,8 +126,8 @@ def run_silver(spark, kafka_conf, silver_conf):
 
     # Duyệt qua từng topic tạo một stream riêng
     for logical_name, topic in topics.items():
-        # Mẫu đường dẫn để đọc dữ liệu JSON theo partition (do Debezium ghi)
         bronze_path = f"{bronze_base}/{topic}/partition=*/**"
+        print(f"[INFO] Will read bronze path: {bronze_path}")
 
         # đọc raw file line-by-line (connector writes JSON per record)
         raw = (
@@ -84,57 +141,104 @@ def run_silver(spark, kafka_conf, silver_conf):
                            .withColumn("key", F.lit(None).cast("string")) \
                            .select("key", "value")
 
-        # Ép kiểu và tạo cột key/value giống Kafka record
-        parsed = parse_debezium_value(spark, df_with_value)
-        cleaned = parsed.filter(F.col("after").isNotNull())
+        # Parse Debezium generic (before/after as MapType)
+        parsed = parse_debezium_df(df_with_value)
 
-        # Làm phẳng dữ liệu “after” thành các cột cụ thể tuỳ theo từng bảng
+        # Filter bỏ event không có after (ví dụ delete-only hoặc tombstone)
+        parsed_nonnull = parsed.filter(F.col("after").isNotNull())
+
+        # Tại thời điểm này, 'parsed_nonnull' có cột:
+        #   after (map<string,string>), op (string), ts_ms (long)
+        # Bây giờ làm phẳng theo từng topic
+
         if logical_name == "orders":
-            # cố gắng lấy các field phổ biến của orders
-            flattened = cleaned.select(
-                coalesce_after(cleaned, ["OrderID", "order_id", "orderid"], "order_id"),
-                coalesce_after(cleaned, ["CustomerID", "customer_id"], "customer_id"),
-                coalesce_after(cleaned, ["EmployeeID", "employee_id"], "employee_id"),
-                coalesce_after(cleaned, ["OrderDate", "order_date"], "order_date"),
-                coalesce_after(cleaned, ["RequiredDate", "required_date"], "required_date"),
-                coalesce_after(cleaned, ["ShippedDate", "shipped_date"], "shipped_date"),
-                coalesce_after(cleaned, ["ShipVia", "ship_via"], "ship_via"),
-                coalesce_after(cleaned, ["Freight", "freight"], "freight"),
+            # Lấy trực tiếp các trường phổ biến từ map 'after' (dùng cast nếu cần)
+            flattened = parsed_nonnull.select(
+                F.col("after").getItem("order_id").alias("order_id").cast("int"),
+                F.col("after").getItem("customer_id").alias("customer_id"),
+                F.col("after").getItem("employee_id").alias("employee_id").cast("int"),
+                F.date_add(F.lit("1970-01-01"), F.col("after").getItem("order_date").cast("int")).alias("order_date"),
+                F.date_add(F.lit("1970-01-01"), F.col("after").getItem("required_date").cast("int")).alias("required_date"),
+                F.date_add(F.lit("1970-01-01"), F.col("after").getItem("shipped_date").cast("int")).alias("shipped_date"),
+                F.col("after").getItem("ship_via").alias("ship_via").cast("int"),
+                F.col("after").getItem("freight").alias("freight").cast("double"),
+                F.col("after").getItem("ship_name").alias("ship_name"),
+                F.col("after").getItem("ship_address").alias("ship_address"),
+                F.col("after").getItem("ship_city").alias("ship_city"),
+                F.col("after").getItem("ship_region").alias("ship_region"),
+                F.col("after").getItem("ship_postal_code").alias("ship_postal_code"),
+                F.col("after").getItem("ship_country").alias("ship_country"),
                 F.col("op"),
-                F.col("ts_ms")
-            )
+                F.col("ts_ms").alias("ingest_ts").cast("bigint")
+            ).withColumn("processed_at", F.current_timestamp())
 
-            # chuyển kiểu dữ liệu nếu cần
             orders_target = f"{path_base}/{topic}/"
             orders_ckpt = f"{checkpoint_base}/{topic}"
-            q = (flattened.writeStream.format("delta").outputMode("append").option("checkpointLocation", orders_ckpt).start(orders_target))
+            q = (
+                flattened.writeStream.format("delta")
+                .outputMode("append")
+                .option("checkpointLocation", orders_ckpt)
+                .option("mergeSchema", "true")
+                .start(orders_target)
+            )
             queries[logical_name] = q
 
         elif logical_name == "order_details":
-            flattened = cleaned.select(
-                coalesce_after(cleaned, ["OrderID", "order_id", "orderid"], "order_id"),
-                coalesce_after(cleaned, ["ProductID", "product_id", "productid"], "product_id"),
-                coalesce_after(cleaned, ["UnitPrice", "unit_price"], "unit_price"),
-                coalesce_after(cleaned, ["Quantity", "quantity"], "quantity"),
-                coalesce_after(cleaned, ["Discount", "discount"], "discount"),
+            # order_details có các trường: order_id, product_id, unit_price, quantity, discount
+            flattened = parsed_nonnull.select(
+                F.coalesce(
+                    F.col("after").getItem("OrderID"),
+                    F.col("after").getItem("order_id"),
+                    F.col("after").getItem("orderid")
+                ).alias("order_id").cast("int"),
+                F.coalesce(
+                    F.col("after").getItem("ProductID"),
+                    F.col("after").getItem("product_id"),
+                    F.col("after").getItem("productid")
+                ).alias("product_id").cast("int"),
+                F.coalesce(
+                    F.col("after").getItem("UnitPrice"),
+                    F.col("after").getItem("unit_price"),
+                    F.col("after").getItem("unitprice")
+                ).alias("unit_price").cast("double"),
+                F.coalesce(
+                    F.col("after").getItem("Quantity"),
+                    F.col("after").getItem("quantity")
+                ).alias("quantity").cast("double"),
+                F.coalesce(
+                    F.col("after").getItem("Discount"),
+                    F.col("after").getItem("discount")
+                ).alias("discount").cast("double"),
+                F.col("op"),
+                F.col("ts_ms").alias("ingest_ts").cast("bigint")
+            )
+
+            details_target = f"{path_base}/{topic}/"
+            details_ckpt = f"{checkpoint_base}/{topic}"
+            q = (
+                flattened.writeStream.format("delta")
+                .outputMode("append")
+                .option("checkpointLocation", details_ckpt)
+                .option("mergeSchema", "true")
+                .start(details_target)
+            )
+            queries[logical_name] = q
+
+        else:
+            # generic: ghi toàn bộ map 'after' (dùng để debug hoặc xử lý bảng khác)
+            generic = parsed_nonnull.select(
+                F.col("after"),
                 F.col("op"),
                 F.col("ts_ms")
             )
-            details_target = f"{path_base}/{topic}/"
-            details_ckpt = f"{checkpoint_base}/{topic}"
-            q = (flattened.writeStream.format("delta").outputMode("append").option("checkpointLocation", details_ckpt).start(details_target))
-            queries[logical_name] = q
-
-        # NOTE: `customers` topic is intentionally not handled here — it will be processed
-        # by a separate batch ETL job. If an unexpected topic appears, it will fall through
-        # to the generic writer below.
-
-        else:
-            # generic: write parsed after map as-is to a delta path
             generic_target = f"{path_base}/{topic}/"
             generic_ckpt = f"{checkpoint_base}/{topic}"
             q = (
-                cleaned.writeStream.format("delta").outputMode("append").option("checkpointLocation", generic_ckpt).start(generic_target)
+                generic.writeStream.format("delta")
+                .outputMode("append")
+                .option("checkpointLocation", generic_ckpt)
+                .option("mergeSchema", "true")
+                .start(generic_target)
             )
             queries[logical_name] = q
 
@@ -147,10 +251,11 @@ def run_silver(spark, kafka_conf, silver_conf):
 
     return queries
 
+
 if __name__ == "__main__":
     from pyspark.sql import SparkSession
+    import json
 
-    # Tạo SparkSession
     spark = (
         SparkSession.builder
         .appName("streaming-silver")
@@ -163,21 +268,17 @@ if __name__ == "__main__":
         .getOrCreate()
     )
 
-    # Đọc config từ file (như main.py trước đây)
-    import json
+    # Đọc config
     with open("/opt/config/kafka.conf", "r", encoding="utf-8") as f:
         kafka_conf = json.load(f)
     with open("/opt/config/silver.conf", "r", encoding="utf-8") as f:
         silver_conf = json.load(f)
 
-    # Gọi hàm chính
     queries = run_silver(spark, kafka_conf, silver_conf)
 
-    # Chờ stream kết thúc
     try:
         spark.streams.awaitAnyTermination()
     except KeyboardInterrupt:
         print("Stopping silver streams...")
         for q in spark.streams.active:
             q.stop()
-

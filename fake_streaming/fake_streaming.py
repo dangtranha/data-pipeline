@@ -56,14 +56,23 @@ except OperationalError as e:
 
 
 # ==============================
-# Đọc CSV
+# Đọc CSV (sử dụng file mới)
 # ==============================
-orders = pd.read_csv("./orders.csv", on_bad_lines="skip")
-order_details = pd.read_csv("./order-details.csv", on_bad_lines="skip")
+# Mặc định dùng bộ dữ liệu mới: northwind_orders.csv, northwind_order_details.csv
+# Có thể thay đổi bằng biến môi trường FAKE_ORDERS_CSV, FAKE_ORDER_DETAILS_CSV nếu cần
+import os as _os
+
+orders_csv = _os.getenv("FAKE_ORDERS_CSV", "./northwind_orders.csv")
+details_csv = _os.getenv("FAKE_ORDER_DETAILS_CSV", "./northwind_order_details.csv")
+
+orders = pd.read_csv(orders_csv, on_bad_lines="skip")
+order_details = pd.read_csv(details_csv, on_bad_lines="skip")
 
 orders.columns = orders.columns.str.strip()
 order_details.columns = order_details.columns.str.strip()
 
+print("Orders CSV:", orders_csv)
+print("Order Details CSV:", details_csv)
 print("Orders columns:", list(orders.columns))
 
 # ==============================
@@ -98,6 +107,22 @@ if order_id_col is None:
     exit(1)
 
 detail_orderid_col = find_col(order_details, ["order_id", "orderid", "OrderID"])
+if detail_orderid_col is None:
+    print("Không tìm thấy cột order_id trong file order_details! Kiểm tra file:", details_csv)
+    cur.close(); conn.close()
+    exit(1)
+
+# Xác định sẵn các cột của order_details để tránh tìm lặp lại mỗi vòng
+od_colmap = {
+    "product_id": find_col(order_details, ["product_id", "productid", "ProductID"]),
+    "unit_price": find_col(order_details, ["unit_price", "unitprice", "UnitPrice"]),
+    "quantity": find_col(order_details, ["quantity", "Quantity"]),
+    "discount": find_col(order_details, ["discount", "Discount"]),
+}
+
+for k, v in od_colmap.items():
+    if v is None:
+        print(f"Cảnh báo: Không tìm thấy cột '{k}' trong order_details, giá trị sẽ là NULL khi chèn.")
 
 for _, order in orders.iterrows():
     try:
@@ -126,7 +151,8 @@ for _, order in orders.iterrows():
         conn.commit()
 
         # Chi tiết đơn hàng
-        details = order_details[order_details[detail_orderid_col] == order_id]
+        # Tương thích kiểu dữ liệu để so sánh
+        details = order_details[order_details[detail_orderid_col].astype(str) == str(order_id)]
         for _, d in details.iterrows():
             cur.execute("""
                 INSERT INTO order_details (order_id, product_id, unit_price, quantity, discount)
@@ -134,10 +160,10 @@ for _, order in orders.iterrows():
                 ON CONFLICT (order_id, product_id) DO NOTHING;
             """, (
                 order_id,
-                clean_value(d.get(find_col(order_details, ["product_id", "productid", "ProductID"]))),
-                clean_value(d.get(find_col(order_details, ["unit_price", "unitprice", "UnitPrice"]))),
-                clean_value(d.get(find_col(order_details, ["quantity", "Quantity"]))),
-                clean_value(d.get(find_col(order_details, ["discount", "Discount"]))),
+                clean_value(d.get(od_colmap["product_id"])) if od_colmap["product_id"] else None,
+                clean_value(d.get(od_colmap["unit_price"])) if od_colmap["unit_price"] else None,
+                clean_value(d.get(od_colmap["quantity"])) if od_colmap["quantity"] else None,
+                clean_value(d.get(od_colmap["discount"])) if od_colmap["discount"] else None,
             ))
         conn.commit()
         
