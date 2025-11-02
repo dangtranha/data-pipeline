@@ -36,8 +36,9 @@
 
 
 
-1. Config deltalake + MinIO  (Việt)   
-2. Streaming (Phát)  
-3. Batch ETL (Phúc hoặc Đăng)
-4. BI (Streaming - Grafana, Batch ETL - PowerBI, supperset ) (Phượng)
+1. Thiết lập PostgreSQL → Debezium → Kafka (CDC Pipeline)  (Đăng)
+2. Cấu hình MinIO + Delta Lake Storage (Việt)   
+3. Streaming (Phát)  
+4. Batch ETL (Phúc hoặc Đăng)
+5. BI (Streaming - Grafana, Batch ETL - PowerBI, supperset ) (Phượng)
   
